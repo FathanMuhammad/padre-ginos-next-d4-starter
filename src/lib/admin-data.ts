@@ -305,6 +305,30 @@ export async function getPizzaSoldOnDay(pizzaId: string, date: string): Promise<
   return row?.n ?? 0;
 }
 
+/** How many times multiple pizzas were ordered on that day, in a single query. */
+export async function getPizzasSoldOnDay(
+  pizzaIds: string[],
+  date: string,
+): Promise<Record<string, number>> {
+  await requirePermission("admin:view");
+  await simulateLatency("read");
+  if (pizzaIds.length === 0) return {};
+  const placeholders = pizzaIds.map(() => "?").join(", ");
+  const rows = await all<{ pizzaId: string; n: number }>(
+    `SELECT p.pizza_type_id AS pizzaId, COALESCE(SUM(d.quantity), 0) AS n
+     FROM order_details d
+     JOIN orders o ON o.order_id = d.order_id
+     JOIN pizzas p ON p.pizza_id = d.pizza_id
+     WHERE p.pizza_type_id IN (${placeholders}) AND o.date = ?
+     GROUP BY p.pizza_type_id`,
+    [...pizzaIds, date],
+  );
+  const result: Record<string, number> = {};
+  for (const id of pizzaIds) result[id] = 0;
+  for (const r of rows) result[r.pizzaId] = r.n;
+  return result;
+}
+
 /** Live counter for the sidebar: orders still waiting on the latest day. */
 export async function getPendingCount(): Promise<number> {
   await requirePermission("admin:view");

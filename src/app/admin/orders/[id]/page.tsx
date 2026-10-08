@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { Suspense } from "react";
 import StatusActions from "@/components/admin/StatusActions";
 import StatusBadge from "@/components/admin/StatusBadge";
-import { getDayOrderCount, getOrder, getPizzaSoldOnDay } from "@/lib/admin-data";
+import { getDayOrderCount, getOrder, getPizzasSoldOnDay } from "@/lib/admin-data";
 import { getCurrentUser } from "@/lib/auth";
 import { formatPrice } from "@/lib/format";
 import { can } from "@/lib/permissions";
@@ -14,16 +15,16 @@ export default async function OrderDetailPage({
   const orderId = Number(id);
   if (!Number.isInteger(orderId)) notFound();
 
-  const order = await getOrder(orderId); // checks "admin:view" inside
+  const [order, user] = await Promise.all([
+    getOrder(orderId),
+    getCurrentUser(),
+  ]);
   if (!order) notFound();
-  const user = await getCurrentUser();
 
-  // Context for staff: how busy was that day, how popular is each pizza
-  const dayOrderCount = await getDayOrderCount(order.date);
-  const soldThatDay: number[] = [];
-  for (const line of order.lines) {
-    soldThatDay.push(await getPizzaSoldOnDay(line.pizzaId, order.date));
-  }
+  // Non-blocking promises for extra context: streamed inside Suspense
+  const dayOrderCountPromise = getDayOrderCount(order.date);
+  const pizzaIds = Array.from(new Set(order.lines.map((l) => l.pizzaId)));
+  const soldPromise = getPizzasSoldOnDay(pizzaIds, order.date);
 
   return (
     <section className="max-w-3xl">
@@ -33,9 +34,9 @@ export default async function OrderDetailPage({
       <h1 className="mt-4 text-3xl font-black">Order #{order.id}</h1>
       <p className="mt-1 flex items-center gap-3 text-ink/70">
         {order.date} {order.time}
-        <span className="text-sm" data-testid="day-order-count">
-          · {dayOrderCount} order hari itu
-        </span>
+        <Suspense fallback={<span className="text-sm text-ink/40 animate-pulse" data-testid="day-order-count">· … order hari itu</span>}>
+          <DayOrderCount countPromise={dayOrderCountPromise} />
+        </Suspense>
         <span data-testid="order-status">
           <StatusBadge status={order.status} />
         </span>
@@ -69,7 +70,9 @@ export default async function OrderDetailPage({
               <td className="px-4 py-2 text-right">{line.quantity}</td>
               <td className="px-4 py-2 text-right">{formatPrice(line.price)}</td>
               <td className="px-4 py-2 text-right" data-testid="sold-that-day">
-                {soldThatDay[i]}
+                <Suspense fallback={<span className="text-ink/40 animate-pulse">…</span>}>
+                  <SoldThatDay pizzaId={line.pizzaId} soldPromise={soldPromise} />
+                </Suspense>
               </td>
             </tr>
           ))}
@@ -80,4 +83,24 @@ export default async function OrderDetailPage({
       </p>
     </section>
   );
+}
+
+async function DayOrderCount({ countPromise }: { countPromise: Promise<number> }) {
+  const count = await countPromise;
+  return (
+    <span className="text-sm" data-testid="day-order-count">
+      · {count} order hari itu
+    </span>
+  );
+}
+
+async function SoldThatDay({
+  pizzaId,
+  soldPromise,
+}: {
+  pizzaId: string;
+  soldPromise: Promise<Record<string, number>>;
+}) {
+  const sold = await soldPromise;
+  return <>{sold[pizzaId] ?? 0}</>;
 }
